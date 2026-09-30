@@ -39,7 +39,9 @@ sensor at the center of the breakout board is exposed
 
 Plug you Flying Cavy Altitude Limiter to the throttle connections on
 your receiver and to the ESC.  When you power up the plane the LED
-near the buttons will blink.  Pressing the button furthest from the
+near the buttons will blink.  The LED blinks blue until the throttle
+has been held low for about 1 second; the motor cannot be started
+until the LED changes from blue to green.  Pressing the button furthest from the
 blinking LED will change the mode. The mode will be indicated by 1, 2,
 or 3 blinks.  The default altitudes and times are 80m/15s, 100m/30s,
 150m/30s (these will probably change). The current relight logic is
