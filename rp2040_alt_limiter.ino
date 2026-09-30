@@ -24,15 +24,21 @@ Servo t_out;
 #define DELAY_TIME 20  // this is the 20ms between servo pulses from the receiver
 #define ALT_HISTORY_SIZE 25
 #define OVERSHOOT_FACTOR 1.2
+#define THROTTLE_LOW_US 1100       // throttle must be below this...
+#define THROTTLE_LOW_MS 1000       // ...for this long after power up before arming is allowed
+#define THROTTLE_MIN_VALID_US 800  // pulseIn returns 0 on timeout; don't treat no signal as low
 
+#define WAIT_COLOR (0x0000f0)      // waiting for throttle low after power up
 #define READY_COLOR (0x00f030)
 #define ARMED_COLOR (0x900090)
 #define DONE_COLOR (0x909020)
 #define FOUL_COLOR (0xf00000)
 
-int color = READY_COLOR;
+int color = WAIT_COLOR;
 int armed = 0;
 int can_arm = 1;
+int throttle_safe = 0;
+uint32_t throttle_low_start = 0;
 unsigned long timer = 30000;
 int altitude=50;
 int altitude_list[] = {80,100,150};
@@ -113,6 +119,7 @@ Serial.println(F("Setting pressure oversampling to 16X..."));
   // in order to ena bright
 
 
+  throttle_low_start = millis();
   Serial.print("setup done \n");
 }
 
@@ -186,6 +193,17 @@ void loop() {
   bmp.readTemperature();  // needed to get accurate readings
   float cur_altitude = bmp.readAltitude();
   uint32_t now = millis();
+  // Throttle-low interlock: don't allow arming until a valid low throttle
+  // has been seen continuously for THROTTLE_LOW_MS after power up.
+  if (!throttle_safe) {
+    if (in_value < THROTTLE_MIN_VALID_US || in_value > THROTTLE_LOW_US) {
+      throttle_low_start = now;
+    } else if (now - throttle_low_start >= THROTTLE_LOW_MS) {
+      throttle_safe = 1;
+      color = READY_COLOR;
+      Serial.println("throttle low, arming enabled");
+    }
+  }
   blink(now);
   if (read_button(11) && (alt_state < 3)) {
     alt_state = (alt_state + 1) % 3;
@@ -212,7 +230,7 @@ void loop() {
     }
   } else {
     // arm if you can arm and the throttle is above 20%
-    if (can_arm && (in_value > 1200)) {
+    if (throttle_safe && can_arm && (in_value > 1200)) {
       if(arm_count == 0) base_altitude = cur_altitude;
       Serial.println("starting arm");
       base_timer = now;
