@@ -58,12 +58,20 @@ void setup() {
   pinMode(2,INPUT);
   pinMode(11,INPUT);
   pinMode(4,OUTPUT);
-  t_out.attach(4);
+  // attach() starts sending pulses right away.  Without the last argument
+  // it sends 1500µs (half throttle) until the first write in loop().
+  t_out.attach(4, 1000, 2000, 1000);
 
   if (!bmp.begin(BMP5XX_ALTERNATIVE_ADDRESS, &Wire)) {
   // For SPI mode (uncomment the line below and comment out the I2C line above):
   // if (!bmp.begin(BMP5XX_CS_PIN, &SPI)) {
     Serial.println(F("Could not find a valid BMP5xx sensor, check wiring!"));
+    // The throttle output stays at 1000µs.  Show a solid red led so the
+    // failure is visible without a serial connection.
+    pixels.begin();
+    pixels.setBrightness(20);
+    pixels.fill(FOUL_COLOR);
+    pixels.show();
     while (1) delay(10);
   }
   
