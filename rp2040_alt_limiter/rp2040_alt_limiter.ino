@@ -28,21 +28,46 @@ Servo t_out;
 #define THROTTLE_LOW_MS 1000       // ...for this long after power up before arming is allowed
 #define THROTTLE_MIN_VALID_US 800  // pulseIn returns 0 on timeout; don't treat no signal as low
 
-#define WAIT_COLOR (0x0000f0)      // waiting for throttle low after power up
-#define READY_COLOR (0x00f030)
-#define ARMED_COLOR (0x900090)
-#define DONE_COLOR (0x909020)
-#define FOUL_COLOR (0xf00000)
+
+// colors in the Okabe Ito pallet for friendlyness for color deficient vision
+#define BLACK (0x000000)
+#define ORANGE (0xE69F00)
+#define CYAN (0x56B4E9)
+#define GREEN (0x009E73)
+#define YELLOW (0xF0E442)
+#define BLUE (0x0072B2)
+#define RED (0xD55E00)
+#define PURPLE (0xCC79A7)
+
+#define WAIT_COLOR  BLUE     // waiting for throttle low after power up
+#define READY_COLOR GREEN
+#define ARMED_COLOR CYAN
+#define DONE_COLOR PURPLE
+#define FOUL_COLOR RED
+
+
+enum State_t {
+	Start,
+	Wait_For_Valid_Throttle,
+	Can_Arm,
+	Armmed,
+	Done_Cant_Rearm,
+	Done_Can_Rearm
+};
+
+State_t state = Start;
 
 int color = WAIT_COLOR;
-int armed = 0;
-int can_arm = 1;
-int throttle_safe = 0;
+// int armed = 0;
+// int can_arm = 1;
+// int throttle_safe = 0;
 uint32_t throttle_low_start = 0;
-unsigned long timer = 30000;
-int altitude=50;
 int altitude_list[] = {80,100,150};
 int timer_list[] = {15000,30000,30000};
+
+unsigned long timer = timer_list[0];
+int altitude= altitude_list[0];
+
 int base_altitude=0;
 unsigned long base_timer = 0;
 unsigned long loop_counter = 0;
@@ -59,10 +84,12 @@ float vspd_correction = 1000.0 / (DELAY_TIME * ALT_HISTORY_SIZE);
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200);
- //  while (!Serial) delay(10); 
 
+	// throttle input pin
   pinMode(2,INPUT);
-  pinMode(11,INPUT);
+	// mode set button
+	pinMode(11,INPUT);
+	// throttle output pin
   pinMode(4,OUTPUT);
   t_out.attach(4);
 
@@ -91,10 +118,11 @@ Serial.println(F("Setting pressure oversampling to 16X..."));
 
   
   
-//  bmp.setMetricSystem(InternationalSystem());
   bmp.readTemperature(); // Without the readTemperature call we get bad values for altitude
+
   float cur_altitude = bmp.readAltitude();
-  for(int i = 0 ; i < ALT_HISTORY_SIZE ; i++) previous_altitude_arr[i]= cur_altitude;
+
+	for(int i = 0 ; i < ALT_HISTORY_SIZE ; i++) previous_altitude_arr[i]= cur_altitude;
 
 
 #if defined(NEOPIXEL_POWER)
@@ -112,6 +140,8 @@ Serial.println(F("Setting pressure oversampling to 16X..."));
 
 
   throttle_low_start = millis();
+	state = Wait_For_Valid_Throttle;
+
   Serial.print("setup done \n");
 }
 
@@ -181,17 +211,22 @@ int read_button(int pin) {
 
 void loop() {
   int out_value = 1000; // by default we are going to output 1000µs 
+
   int in_value = pulseIn(2,HIGH,50000);
+
   bmp.readTemperature();  // needed to get accurate readings
   float cur_altitude = bmp.readAltitude();
+
   uint32_t now = millis();
+
   // Throttle-low interlock: don't allow arming until a valid low throttle
   // has been seen continuously for THROTTLE_LOW_MS after power up.
-  if (!throttle_safe) {
+  if (state == Wait_For_Valid_Throttle) {
     if (in_value < THROTTLE_MIN_VALID_US || in_value > THROTTLE_LOW_US) {
+			// If we don't have a valid throttle signal 
       throttle_low_start = now;
     } else if (now - throttle_low_start >= THROTTLE_LOW_MS) {
-      throttle_safe = 1;
+      state = Can_Arm;
       color = READY_COLOR;
       Serial.println("throttle low, arming enabled");
     }
@@ -207,28 +242,27 @@ void loop() {
     Serial.println(timer);
   }
   float vspd = (cur_altitude - previous_altitude_arr[pa_idx]) * vspd_correction;
-  if (armed) {
+  if (state == Armmed) {
     // disarm if above target alt  
     if (cur_altitude + (vspd * OVERSHOOT_FACTOR)> base_altitude + altitude) {
-       armed = 0;
+       state = Done_Cant_Rearm;
        alt_state += 3;
        color = DONE_COLOR;
     } 
     // disarm if after time
     if (now > base_timer + timer) { 
-      armed = 0;
+			state = Done_Cant_Rearm;
        alt_state += 6;
        color = DONE_COLOR;
     }
   } else {
     // arm if you can arm and the throttle is above 20%
-    if (throttle_safe && can_arm && (in_value > 1200)) {
+    if ((state == Can_Arm || state == Done_Can_Rearm) && (in_value > 1200)) {
       if(arm_count == 0) base_altitude = cur_altitude;
       Serial.println("starting arm");
       base_timer = now;
-      armed = 1;
+      state = Armmed;
       color = ARMED_COLOR;
-      can_arm = 0;
       arm_count++;
       if (arm_count > 1) {
         color = FOUL_COLOR;
@@ -236,13 +270,13 @@ void loop() {
       }
     }
     // If we are not armed and cant arm  and we are no more than 10m high re enable arming
-    if (!can_arm && !armed && 
+    if (state == Done_Cant_Rearm && 
     ((cur_altitude < base_altitude + 10) || (now > base_timer + timer + timer)) && 
-    (in_value < 1150)) {
-      can_arm = 1;
+    (in_value < THROTTLE_LOW_US)) {
+      state = Done_Can_Rearm;
     }
   }
-  if (armed) {
+  if (state = Armmed) {
     out_value = in_value;
   }
   t_out.writeMicroseconds(out_value);
