@@ -54,3 +54,7 @@ short flashes that indicate the mode. After flight use the reset
 button to reset the board.  You will also need to make sure you are in
 the right mode as it doesn't save that setting.
 
+If the LED is an unblinking red right after power up the pressure
+sensor was not found.  The motor will not run. Check the cable between
+the two boards.
+
