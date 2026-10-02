@@ -24,7 +24,10 @@ Servo t_out;
 #define DELAY_TIME 20  // this is the 20ms between servo pulses from the receiver
 #define ALT_HISTORY_SIZE 25
 #define OVERSHOOT_FACTOR 1.2
-#define THROTTLE_LOW_US 1100       // throttle must be below this...
+#define THROTTLE_LOW_US 1150       // throttle must be below this...
+				   // 1150 because my rx is goes from
+				   // 1100-1900 even though the tx
+				   // says otherwise
 #define THROTTLE_LOW_MS 1000       // ...for this long after power up before arming is allowed
 #define THROTTLE_MIN_VALID_US 800  // pulseIn returns 0 on timeout; don't treat no signal as low
 
@@ -47,15 +50,25 @@ Servo t_out;
 
 
 enum State_t {
-	Start,
-	Wait_For_Valid_Throttle,
-	Can_Arm,
-	Armmed,
-	Done_Cant_Rearm,
-	Done_Can_Rearm
+  Start,
+  Wait_For_Valid_Throttle,
+  Can_Arm,
+  Armmed,
+  Done_Cant_Rearm,
+  Done_Can_Rearm
 };
 
 State_t state = Start;
+
+enum Reason_t {
+  Ready,
+  Altitude,
+  Time,
+  Foul
+};
+
+Reason_t reason = Ready;
+
 
 int color = WAIT_COLOR;
 // int armed = 0;
@@ -84,20 +97,21 @@ float vspd_correction = 1000.0 / (DELAY_TIME * ALT_HISTORY_SIZE);
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200);
+  delay(1000);
 
-	// throttle input pin
+  // throttle input pin
   pinMode(2,INPUT);
-	// mode set button
-	pinMode(11,INPUT);
-	// throttle output pin
+  // mode set button
+  pinMode(11,INPUT);
+  // throttle output pin
   pinMode(4,OUTPUT);
   // attach() starts sending pulses right away.  Without the last argument
   // it sends 1500µs (half throttle) until the first write in loop().
   t_out.attach(4, 1000, 2000, 1000);
 
   if (!bmp.begin(BMP5XX_ALTERNATIVE_ADDRESS, &Wire)) {
-  // For SPI mode (uncomment the line below and comment out the I2C line above):
-  // if (!bmp.begin(BMP5XX_CS_PIN, &SPI)) {
+    // For SPI mode (uncomment the line below and comment out the I2C line above):
+    // if (!bmp.begin(BMP5XX_CS_PIN, &SPI)) {
     Serial.println(F("Could not find a valid BMP5xx sensor, check wiring!"));
     // The throttle output stays at 1000µs.  Show a solid red led so the
     // failure is visible without a serial connection.
@@ -110,7 +124,7 @@ void setup() {
   
   Serial.println(F("Setting temperature oversampling to 2X..."));
   bmp.setTemperatureOversampling(BMP5XX_OVERSAMPLING_2X);
-Serial.println(F("Setting pressure oversampling to 16X..."));
+  Serial.println(F("Setting pressure oversampling to 16X..."));
   bmp.setPressureOversampling(BMP5XX_OVERSAMPLING_16X);
   Serial.println(F("Setting IIR filter to coefficient 3..."));
   bmp.setIIRFilterCoeff(BMP5XX_IIR_FILTER_COEFF_3);
@@ -130,7 +144,7 @@ Serial.println(F("Setting pressure oversampling to 16X..."));
 
   float cur_altitude = bmp.readAltitude();
 
-	for(int i = 0 ; i < ALT_HISTORY_SIZE ; i++) previous_altitude_arr[i]= cur_altitude;
+  for(int i = 0 ; i < ALT_HISTORY_SIZE ; i++) previous_altitude_arr[i]= cur_altitude;
 
 
 #if defined(NEOPIXEL_POWER)
@@ -148,7 +162,7 @@ Serial.println(F("Setting pressure oversampling to 16X..."));
 
 
   throttle_low_start = millis();
-	state = Wait_For_Valid_Throttle;
+  state = Wait_For_Valid_Throttle;
 
   Serial.print("setup done \n");
 }
@@ -191,13 +205,30 @@ int alt_state = 2;
 
 void blink(uint32_t ms) {
   uint32_t phase = (ms >> 8) & 15;
-  int light = (patterns[phase] >> alt_state) & 1;  
+  int s = alt_state;
+  switch (reason) {
+  case Ready:
+    s = alt_state;
+    break;
+  case Altitude:
+    s = alt_state + 3;
+    break;
+  case Time:
+    s = alt_state + 6;
+    break;
+  case Foul:
+    s = 9;
+    break;
+  default:
+    s = 0;
+  }
+  int light = (patterns[phase] >> s) & 1;  
   if (light) {
     pixels.fill(color);
-  pixels.show();
+    pixels.show();
   } else {
     pixels.fill(0x000000);
-  pixels.show();
+    pixels.show();
   }
 }
 
@@ -231,7 +262,7 @@ void loop() {
   // has been seen continuously for THROTTLE_LOW_MS after power up.
   if (state == Wait_For_Valid_Throttle) {
     if (in_value < THROTTLE_MIN_VALID_US || in_value > THROTTLE_LOW_US) {
-			// If we don't have a valid throttle signal 
+      // If we don't have a valid throttle signal 
       throttle_low_start = now;
     } else if (now - throttle_low_start >= THROTTLE_LOW_MS) {
       state = Can_Arm;
@@ -244,24 +275,20 @@ void loop() {
     alt_state = (alt_state + 1) % 3;
     altitude = altitude_list[alt_state];
     timer = timer_list[alt_state];
-    Serial.print("alt ");
-    Serial.print(altitude);
-    Serial.print(" timer ");
-    Serial.println(timer);
   }
   float vspd = (cur_altitude - previous_altitude_arr[pa_idx]) * vspd_correction;
   if (state == Armmed) {
     // disarm if above target alt  
     if (cur_altitude + (vspd * OVERSHOOT_FACTOR)> base_altitude + altitude) {
-       state = Done_Cant_Rearm;
-       alt_state += 3;
-       color = DONE_COLOR;
+      state = Done_Cant_Rearm;
+      color = DONE_COLOR;
+      reason = Altitude;
     } 
     // disarm if after time
     if (now > base_timer + timer) { 
-			state = Done_Cant_Rearm;
-       alt_state += 6;
-       color = DONE_COLOR;
+      state = Done_Cant_Rearm;
+      color = DONE_COLOR;
+      reason = Time;
     }
   } else {
     // arm if you can arm and the throttle is above 20%
@@ -274,27 +301,27 @@ void loop() {
       arm_count++;
       if (arm_count > 1) {
         color = FOUL_COLOR;
-        alt_state = 9;
+        reason = Foul;
       }
     }
     // If we are not armed and cant arm  and we are no more than 10m high re enable arming
     if (state == Done_Cant_Rearm && 
-    ((cur_altitude < base_altitude + 10) || (now > base_timer + timer + timer)) && 
-    (in_value < THROTTLE_LOW_US)) {
+	((cur_altitude < base_altitude + 10) || (now > base_timer + timer + timer)) && 
+	(in_value < THROTTLE_LOW_US)) {
       state = Done_Can_Rearm;
     }
   }
-  if (state = Armmed) {
+  if (state == Armmed) {
     out_value = in_value;
   }
   t_out.writeMicroseconds(out_value);
- // Serial.print("Temperature: ");
- //   Serial.println(bmp.readTemperature());
- //  Serial.print("Pressure: ");
- //   Serial.println(bmp.readPressure());
- //   Serial.print("Altitude: ");
- //  Serial.println(cur_altitude);
- previous_altitude_arr[pa_idx] = cur_altitude;
+  // Serial.print("Temperature: ");
+  //   Serial.println(bmp.readTemperature());
+  //  Serial.print("Pressure: ");
+  //   Serial.println(bmp.readPressure());
+  //   Serial.print("Altitude: ");
+  //  Serial.println(cur_altitude);
+  previous_altitude_arr[pa_idx] = cur_altitude;
   pa_idx = (pa_idx + 1)/ALT_HISTORY_SIZE;
   loop_counter++;
   // removing the delay because pulseIn function will block until 
