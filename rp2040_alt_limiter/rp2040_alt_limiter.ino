@@ -278,14 +278,16 @@ void loop() {
   }
   float vspd = (cur_altitude - previous_altitude_arr[pa_idx]) * vspd_correction;
   if (state == Armmed) {
-    // disarm if above target alt  
+    // disarm if above target alt -- checked first: altitude is the more
+    // specific, safety-relevant reason, and these must be mutually
+    // exclusive (else if) so a pass where both conditions are true doesn't
+    // silently overwrite reason = Altitude with reason = Time (H5)
     if (cur_altitude + (vspd * OVERSHOOT_FACTOR)> base_altitude + altitude) {
       state = Done_Cant_Rearm;
       color = DONE_COLOR;
       reason = Altitude;
-    } 
-    // disarm if after time
-    if (now > base_timer + timer) { 
+    } else if (now > base_timer + timer) {
+      // disarm if after time
       state = Done_Cant_Rearm;
       color = DONE_COLOR;
       reason = Time;
