@@ -271,7 +271,13 @@ void loop() {
     }
   }
   blink(now);
-  if (read_button(11) && (alt_state < 3)) {
+  // Lock the mode once the first arm has happened (M4): `alt_state < 3` was
+  // a leftover from before the state-machine refactor (E1) -- alt_state is
+  // now only ever 0-2, so that check was always true and never actually
+  // guarded anything. Without a real guard, a pilot could switch to a
+  // lower-altitude/shorter-time mode mid-flight (or during the relight
+  // window) after seeing how the attempt was going.
+  if (read_button(11) && (arm_count == 0)) {
     alt_state = (alt_state + 1) % 3;
     altitude = altitude_list[alt_state];
     timer = timer_list[alt_state];
