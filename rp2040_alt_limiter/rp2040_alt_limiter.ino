@@ -34,6 +34,7 @@ Servo t_out;
                                    // says otherwise
 #define THROTTLE_LOW_MS 1000       // ...for this long after power up before arming is allowed
 #define THROTTLE_MIN_VALID_US 800  // pulseIn returns 0 on timeout; don't treat no signal as low
+#define SENSOR_FAIL_THRESHOLD 3    // consecutive failed reads before we latch a sensor fault
 
 
 // colors in the Okabe Ito pallet for friendlyness for color deficient vision
@@ -51,6 +52,7 @@ Servo t_out;
 #define ARMED_COLOR CYAN
 #define DONE_COLOR PURPLE
 #define FOUL_COLOR RED
+#define FAULT_COLOR ORANGE   // sensor hardware failure discovered after setup()
 
 
 #define INPUT_PIN 2
@@ -63,7 +65,8 @@ enum State_t {
   Can_Arm,
   Armmed,
   Done_Cant_Rearm,
-  Done_Can_Rearm
+  Done_Can_Rearm,
+  Fault
 };
 
 State_t state = Start;
@@ -93,6 +96,7 @@ float start_altitude = 0;
 unsigned long base_timer = 0;
 unsigned long loop_counter = 0;
 int arm_count = 0;
+int sensor_fail_count = 0;
 
 // We are maintaining a history of the past readings of altitude.  When 
 // we compute the vertical speed (vspd) we will look further back in time
@@ -232,6 +236,13 @@ int alt_state = 2;
 
 
 void blink(uint32_t ms) {
+  if (state == Fault) {
+    // Solid, unblinking -- unmistakable even without reading the pattern,
+    // same convention as the sensor-not-found lockup in setup().
+    pixels.fill(FAULT_COLOR);
+    pixels.show();
+    return;
+  }
   uint32_t phase = (ms >> 8) & 15;
   int s = alt_state;
   switch (reason) {
@@ -283,11 +294,31 @@ void loop() {
 
   int in_value = pulseIn(2,HIGH,50000);
 
-  bmp.readTemperature();  // needed to get accurate readings
+  // performReading() is what readTemperature()/readAltitude() call
+  // internally; calling it ourselves lets us see whether THIS read actually
+  // succeeded instead of silently getting a stale cached value back (H1).
+  bool sensor_ok = bmp.performReading();
   float cur_altitude = bmp.readAltitude();
 
   uint32_t now = millis();
 
+  // Sensor fault latch: a few consecutive failed reads means the sensor has
+  // actually gone bad (disconnected, bus fault, etc.), not a one-off glitch.
+  // Once latched it's permanent for this boot -- cut throttle and show a
+  // solid fault-colored LED (see blink()) until the board is power-cycled.
+  if (state != Fault) {
+    if (sensor_ok) {
+      sensor_fail_count = 0;
+    } else {
+      sensor_fail_count++;
+      Serial.println("sensor read failed");
+      if (sensor_fail_count >= SENSOR_FAIL_THRESHOLD) {
+        state = Fault;
+        color = FAULT_COLOR;
+        Serial.println("sensor fault -- cutting throttle");
+      }
+    }
+  }
 
   // Throttle-low interlock: don't allow arming until a valid low throttle
   // has been seen continuously for THROTTLE_LOW_MS after power up.
