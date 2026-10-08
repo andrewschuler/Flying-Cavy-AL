@@ -1,4 +1,5 @@
 // F5L altitude limiter by Gwen Scogin - 2026
+
 #include <Servo.h> 
 
 #include <Wire.h>
@@ -16,7 +17,10 @@ Adafruit_NeoPixel pixels(NUMPIXELS, PIN_NEOPIXEL, NEO_GRB + NEO_KHZ800);
 
 #define SEALEVELPRESSURE_HPA (1013.25)
 
+#define DEBUG_OUTPUT 1
+
 Adafruit_BMP5xx bmp; // Create BMP5xx object
+
 bmp5xx_powermode_t desiredMode = BMP5XX_POWERMODE_NORMAL; // Cache desired power mode
 
 Servo t_out;
@@ -25,9 +29,9 @@ Servo t_out;
 #define ALT_HISTORY_SIZE 25
 #define OVERSHOOT_FACTOR 1.2
 #define THROTTLE_LOW_US 1150       // throttle must be below this...
-				   // 1150 because my rx is goes from
-				   // 1100-1900 even though the tx
-				   // says otherwise
+                                   // 1150 because my rx is goes from
+                                   // 1100-1900 even though the tx
+                                   // says otherwise
 #define THROTTLE_LOW_MS 1000       // ...for this long after power up before arming is allowed
 #define THROTTLE_MIN_VALID_US 800  // pulseIn returns 0 on timeout; don't treat no signal as low
 #define SENSOR_FAIL_THRESHOLD 3    // consecutive failed reads before we latch a sensor fault
@@ -50,6 +54,10 @@ Servo t_out;
 #define FOUL_COLOR RED
 #define FAULT_COLOR ORANGE   // sensor hardware failure discovered after setup()
 
+
+#define INPUT_PIN 2
+#define OUTPUT_PIN 4
+#define BUTTON_PIN 11
 
 enum State_t {
   Start,
@@ -74,46 +82,56 @@ Reason_t reason = Ready;
 
 
 int color = WAIT_COLOR;
-// int armed = 0;
-// int can_arm = 1;
-// int throttle_safe = 0;
 uint32_t throttle_low_start = 0;
-int altitude_list[] = {80,100,150};
+float altitude_list[] = {80.0,100.0,120.0};
 int timer_list[] = {15000,30000,30000};
 
 unsigned long timer = timer_list[0];
-int altitude= altitude_list[0];
+float altitude= altitude_list[0];
 
-int base_altitude=0;
+float base_altitude=0;
+float cutoff_altitude = 0;
+float start_altitude = 0;
+
 unsigned long base_timer = 0;
 unsigned long loop_counter = 0;
 int arm_count = 0;
 int sensor_fail_count = 0;
+
 // We are maintaining a history of the past readings of altitude.  When 
 // we compute the vertical speed (vspd) we will look further back in time
 // than just the previous reading. This is because loop runs fast enough
 // that there might not be a detectable change in altitude.  
 float previous_altitude_arr[ALT_HISTORY_SIZE];
+
 int pa_idx = 0; 
+
 // there is no reason to do this every time through the loop
 float vspd_correction = 1000.0 / (DELAY_TIME * ALT_HISTORY_SIZE);
+
+unsigned long seconds = 0;
 
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200);
   delay(1000);
 
+	// Setup the io pins
+	
   // throttle input pin
-  pinMode(2,INPUT);
+  pinMode(INPUT_PIN,INPUT);
   // mode set button
-  pinMode(11,INPUT);
+  pinMode(BUTTON_PIN,INPUT);
   // throttle output pin
-  pinMode(4,OUTPUT);
-  // attach() starts sending pulses right away.  Without the last argument
+  pinMode(OUTPUT_PIN,OUTPUT);
+
+	// attach() starts sending pulses right away.  Without the last argument
   // it sends 1500µs (half throttle) until the first write in loop().
   t_out.attach(4, 1000, 2000, 1000);
 
-  if (!bmp.begin(BMP5XX_ALTERNATIVE_ADDRESS, &Wire)) {
+	// setup the bmp580
+
+	if (!bmp.begin(BMP5XX_ALTERNATIVE_ADDRESS, &Wire)) {
     // For SPI mode (uncomment the line below and comment out the I2C line above):
     // if (!bmp.begin(BMP5XX_CS_PIN, &SPI)) {
     Serial.println(F("Could not find a valid BMP5xx sensor, check wiring!"));
@@ -142,14 +160,24 @@ void setup() {
   Serial.println(F("Configuring interrupt pin with data ready source..."));
   bmp.configureInterrupt(BMP5XX_INTERRUPT_LATCHED, BMP5XX_INTERRUPT_ACTIVE_HIGH, BMP5XX_INTERRUPT_PUSH_PULL, BMP5XX_INTERRUPT_DATA_READY, true);
 
-  
-  
-  bmp.readTemperature(); // Without the readTemperature call we get bad values for altitude
+
+
+	// initialize the past altitude array
+	
+	//Add a delay here so that we get a clean measurement
+	delay(500);
+
+	// Without the readTemperature call we get bad values for altitude
+  bmp.readTemperature(); 
 
   float cur_altitude = bmp.readAltitude();
+  Serial.print("start altitude ");
+  Serial.println(cur_altitude);
+  start_altitude = cur_altitude;
 
-  for(int i = 0 ; i < ALT_HISTORY_SIZE ; i++) previous_altitude_arr[i]= cur_altitude;
-
+  for(int i = 0 ; i < ALT_HISTORY_SIZE ; i++) {
+		previous_altitude_arr[i]= cur_altitude;
+	}
 
 #if defined(NEOPIXEL_POWER)
   // If this board has a power control pin, we must set it to output and high
@@ -244,6 +272,7 @@ void blink(uint32_t ms) {
 }
 
 int button_state = 0;
+// This insures if the button is held down we only read it once
 int read_button(int pin) {
   int r = digitalRead(pin);
   if (r) {
@@ -260,6 +289,7 @@ int read_button(int pin) {
 }
 
 void loop() {
+
   int out_value = 1000; // by default we are going to output 1000µs 
 
   int in_value = pulseIn(2,HIGH,50000);
@@ -299,25 +329,70 @@ void loop() {
     } else if (now - throttle_low_start >= THROTTLE_LOW_MS) {
       state = Can_Arm;
       color = READY_COLOR;
+#if DEBUG_OUTPUT 
       Serial.println("throttle low, arming enabled");
+#endif
     }
   }
+	
+	//Do blinking logic
   blink(now);
+
+	// process button input
   if (read_button(11) && (alt_state < 3)) {
     alt_state = (alt_state + 1) % 3;
     altitude = altitude_list[alt_state];
     timer = timer_list[alt_state];
   }
+
+	// compute vertical speed
   float vspd = (cur_altitude - previous_altitude_arr[pa_idx]) * vspd_correction;
+
+#if DEBUG_OUTPUT 
+
+if (0) {
+//	if (now / 1000 > seconds ) {
+		Serial.print("time ");
+		Serial.println(now/1000);
+		Serial.println(loop_counter);
+		Serial.println(vspd);
+		Serial.println(in_value);
+		Serial.println(altitude);
+		Serial.println(cur_altitude);
+    Serial.print ("--------------------- ");
+    Serial.println(cur_altitude - start_altitude);
+		Serial.println(bmp.readPressure());
+		Serial.println(cutoff_altitude);
+
+	}
+
+#endif
+
   if (state == Armmed) {
     // disarm if above target alt  
-    if (cur_altitude + (vspd * OVERSHOOT_FACTOR)> base_altitude + altitude) {
+		if (cur_altitude + (vspd * OVERSHOOT_FACTOR)> base_altitude + altitude) {
+ #if DEBUG_OUTPUT 
+      Serial.println("altitude triggered");
+      Serial.println(cur_altitude);
+      Serial.println(vspd * OVERSHOOT_FACTOR);
+      Serial.println(vspd);
+      Serial.println(previous_altitude_arr[pa_idx]);
+
+      Serial.println(base_altitude);
+      Serial.println(altitude);
+#endif
+      cutoff_altitude = cur_altitude;
       state = Done_Cant_Rearm;
       color = DONE_COLOR;
       reason = Altitude;
     } 
     // disarm if after time
-    if (now > base_timer + timer) { 
+    if (now > base_timer + timer) {
+#if DEBUG_OUTPUT 
+      Serial.println("timer triggered");
+			Serial.print("shutting down at ");
+      Serial.println(now);
+#endif
       state = Done_Cant_Rearm;
       color = DONE_COLOR;
       reason = Time;
@@ -325,38 +400,41 @@ void loop() {
   } else {
     // arm if you can arm and the throttle is above 20%
     if ((state == Can_Arm || state == Done_Can_Rearm) && (in_value > 1200)) {
+			// if doing a relight we are not going to reset the base altitude
       if(arm_count == 0) base_altitude = cur_altitude;
-      Serial.println("starting arm");
       base_timer = now;
+#if DEBUG_OUTPUT 
+      Serial.println("starting arm");
+      Serial.println(base_timer);
+      Serial.println(timer);
+#endif
       state = Armmed;
       color = ARMED_COLOR;
       arm_count++;
+			// If this is a re-arm then we will show the foul signal on the LED
       if (arm_count > 1) {
         color = FOUL_COLOR;
         reason = Foul;
       }
     }
-    // If we are not armed and cant arm  and we are no more than 10m high re enable arming
+    // If we are not armed and cant arm and we are no more than 20m
+    // high re enable arming.  This is assuming that in a contest
+    // situation that it would be reasonable to relight to keep the
+    // plane from landing too far away
     if (state == Done_Cant_Rearm && 
-	((cur_altitude < base_altitude + 10) || (now > base_timer + timer + timer)) && 
-	(in_value < THROTTLE_LOW_US)) {
+				((cur_altitude < base_altitude + 20) ||
+				 (now > base_timer + timer + timer)) && 
+				(in_value < THROTTLE_LOW_US)) {
       state = Done_Can_Rearm;
     }
   }
   if (state == Armmed) {
     out_value = in_value;
   }
-  t_out.writeMicroseconds(out_value);
-  // Serial.print("Temperature: ");
-  //   Serial.println(bmp.readTemperature());
-  //  Serial.print("Pressure: ");
-  //   Serial.println(bmp.readPressure());
-  //   Serial.print("Altitude: ");
-  //  Serial.println(cur_altitude);
+	t_out.writeMicroseconds(out_value);
+
   previous_altitude_arr[pa_idx] = cur_altitude;
-  pa_idx = (pa_idx + 1)/ALT_HISTORY_SIZE;
+  pa_idx = (pa_idx + 1) % ALT_HISTORY_SIZE;
   loop_counter++;
-  // removing the delay because pulseIn function will block until 
-  // it gets a pulse.  This will sync us to the 50hz of the receiver
-  //delay(DELAY_TIME);
+  seconds = now / 1000;
 }
